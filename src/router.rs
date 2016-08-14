@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
+use std::iter::FromIterator;
 
 use iron::{Request, Response, Handler, IronResult, IronError};
 use iron::{status, method, headers};
@@ -11,8 +12,8 @@ use iron::Url;
 use recognizer::Router as Recognizer;
 use recognizer::{Match, Params};
 
-use url::Url;
 use url::form_urlencoded::Serializer;
+
 
 /// `Router` provides an interface for creating complex routes as middleware
 /// for the Iron framework.
@@ -111,56 +112,38 @@ impl Router {
         self
     }
 
-    /// Given a route identifier, generate the corresponding URL for it. The keywords arguments
-    /// will be inserted into the route parameters if there is a matching key, else
-    /// appended as query parameters.
-    pub fn url_for(&self, id: &str, params: &HashMap<String, String>) -> Result<String, String> {
-        let route = self.route_ids.get(id);
-        match route {
-            None => { Err("no route found".to_owned()) },
-            Some(r) => { self.generate_route(r, params) }
-        }
-    }
+    /// Generate a URL.
+    ///
+    /// The keywords arguments will be inserted into the route parameters if there is a matching
+    /// key, else appended as query parameters.
+    pub fn url_for(&self, id: &str, mut params: HashMap<String, String>) -> String {
+        let glob = self.route_ids.get(id).expect("No route with that ID");
 
-    // Generate a route given a set of parameters in the `url_for` function.
-    fn generate_route(&self, route: &String, params: &HashMap<String, String>) -> Result<String, String> {
-        let base_url = String::from("http://example.com");
-        let full_url = base_url + route;
-        let parsed = Url::parse(&full_url);
-        match parsed {
-            Err(_) => { Err(String::from("url parsing error")) },
-            Ok(p) => {
-                let segments = p.path_segments().map(|c| c.collect::<Vec<_>>()).unwrap();
-                self.make_url(route, segments, params)
-            }
-        }
-    }
+        let mut glob_iter = glob.chars();
+        let mut rv = String::new();
 
-    fn make_url(&self, orig_route: &String, path_segments: Vec<&str>, params: &HashMap<String, String>) -> Result<String, String> {
-        let mut no_matched_params = params.clone();
-        let mut new_route = orig_route.clone();
+        while glob_iter.size_hint().1.unwrap() > 0 {
+            rv.extend(glob_iter.by_ref().take_while(|&x| x != ':' && x != '*'));
 
-        for seg in &path_segments {
-            if seg.starts_with(":") {
-                let key = seg.replace(":", "");
-                let value = params.get(&key).unwrap();
-                new_route = new_route.replace(seg, value);
+            let key = String::from_iter(glob_iter.by_ref().take_while(|&x| x != '/'));
+            if key.is_empty() { panic!("Empty key"); }
 
-                // Remove the key because it was found in the path segment.
-                no_matched_params.remove(&key);
-            }
+            let value = match params.remove(&key) {
+                Some(x) => x,
+                None => panic!("No value for key {}", key)
+            };
+            rv.push_str(&value);
         }
 
         // Now add on the remaining parameters that had no path match.
-        if no_matched_params.len() > 0 {
-            let query_params = String::new();
-            let mut encoder = Serializer::new(query_params);
-            for (ref k, ref v) in no_matched_params.iter() {
-                encoder.append_pair(k, v);
-            }
-            return Ok(new_route + "?" + &encoder.finish());
+        if params.len() > 0 {
+            rv.push('?');
+            let rvlen = rv.len();
+            let mut encoder = Serializer::for_suffix(rv, rvlen);
+            encoder.extend_pairs(params.into_iter());
+            rv = encoder.finish();
         }
-        Ok(new_route)
+        rv
     }
 
     fn recognize(&self, method: &method::Method, path: &str)
